@@ -1,6 +1,10 @@
 [package]
-name = "esi_rust"
+name = "esi_vm"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+sdl3 = "0.18"
+
+[profile.release]
+opt-level = 3
