@@ -11,12 +11,16 @@
 // Rust's "undefined behavior" is a controlled panic, not memory
 // corruption), rather than being silently ignored.
 
+use std::collections::VecDeque;
 use std::env;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, BufWriter, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sdl3::event::Event;
+use sdl3::keyboard::{Keycode, Mod};
 use sdl3::video::WindowSurfaceRef;
 
 const FB_WIDTH: usize = 800;
@@ -92,21 +96,46 @@ impl Vm {
     }
 }
 
-/// Poll one key event from SDL's internal queue.
-/// Returns: positive = key-down scancode, negative = key-up, 0 = none.
-fn kb_poll(event_pump: &mut sdl3::EventPump) -> i32 {
-    if let Some(event) = event_pump.poll_event() {
+/// Drain every SDL event currently queued (cheap no-op when the queue is
+/// empty). Keyboard events are queued for the guest program to consume via
+/// `kb_poll`; window-close and the Ctrl+C key combo set `quit_flag` so the
+/// main loop can stop promptly, independent of whether the guest happens to
+/// be reading the keyboard right now.
+fn drain_sdl_events(
+    event_pump: &mut sdl3::EventPump,
+    pending_keys: &mut VecDeque<i32>,
+    quit_flag: &AtomicBool,
+) {
+    while let Some(event) = event_pump.poll_event() {
         match event {
+            Event::Quit { .. } => {
+                quit_flag.store(true, Ordering::SeqCst);
+            }
             Event::KeyDown {
-                scancode: Some(sc), ..
-            } => return sc as i32,
+                scancode: Some(sc),
+                keycode,
+                keymod,
+                ..
+            } => {
+                if keycode == Some(Keycode::C) && keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) {
+                    quit_flag.store(true, Ordering::SeqCst);
+                }
+                pending_keys.push_back(sc as i32);
+            }
             Event::KeyUp {
                 scancode: Some(sc), ..
-            } => return -(sc as i32),
+            } => {
+                pending_keys.push_back(-(sc as i32));
+            }
             _ => {}
         }
     }
-    0
+}
+
+/// Pop one pending key event for the guest program.
+/// Returns: positive = key-down scancode, negative = key-up, 0 = none.
+fn kb_poll(pending_keys: &mut VecDeque<i32>) -> i32 {
+    pending_keys.pop_front().unwrap_or(0)
 }
 
 /// Copy the VM's framebuffer region into the SDL surface's pixel buffer,
@@ -142,33 +171,60 @@ fn main() -> io::Result<()> {
         .build()
         .expect("failed to create window");
 
+    let quit_flag = Arc::new(AtomicBool::new(false));
+    {
+        // Handles the case where the terminal (not the SDL window) still
+        // has focus when Ctrl+C is pressed, so it arrives as a real SIGINT
+        // instead of an SDL key event.
+        let quit_flag = Arc::clone(&quit_flag);
+        ctrlc::set_handler(move || {
+            quit_flag.store(true, Ordering::SeqCst);
+        })
+        .expect("failed to install Ctrl+C handler");
+    }
+    let mut pending_keys: VecDeque<i32> = VecDeque::new();
+
     let mut last_render = Instant::now() - DISPLAY_UPDATE_INTERVAL;
     let stdout = io::stdout();
-    let mut stdout_lock = stdout.lock();
+    let mut stdout_lock = BufWriter::new(stdout.lock());
+    let mut event_poll_counter: u32 = 0;
 
     // Translated from the original `do { ... } while (c);` loop: run the
     // body at least once, then stop when the last-fetched `c` is zero.
     loop {
+        // Draining SDL's event queue involves a lock/syscall even when
+        // empty; doing it every single VM instruction (potentially
+        // hundreds of millions per second) was a real cost. Every 4096
+        // instructions is still far more often than a human can react,
+        // so window-close/Ctrl+C/keyboard input all stay responsive.
+        event_poll_counter = event_poll_counter.wrapping_add(1);
+        if event_poll_counter & 0xFFF == 0 {
+            drain_sdl_events(&mut event_pump, &mut pending_keys, &quit_flag);
+            if quit_flag.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+
         let a = vm.fetch();
         let b = vm.fetch();
         let c = vm.fetch();
 
         if a == -1 {
             // Read scan code from keyboard
-            vm.mem[b as usize] = kb_poll(&mut event_pump);
+            vm.mem[b as usize] = kb_poll(&mut pending_keys);
         } else if b == -1 {
             // Write text to console (low byte of mem[a], matching a raw
             // single-byte `write()` of a little-endian int)
             let byte = (vm.mem[a as usize] as u32 & 0xFF) as u8;
             stdout_lock.write_all(&[byte])?;
-            stdout_lock.flush()?;
         } else {
             // Subleq operation
             if a == 64 {
                 vm.update_clock();
             }
-            vm.mem[b as usize] = vm.mem[b as usize].wrapping_sub(vm.mem[a as usize]);
-            if vm.mem[b as usize] <= 0 {
+            let new_b = vm.mem[b as usize].wrapping_sub(vm.mem[a as usize]);
+            vm.mem[b as usize] = new_b;
+            if new_b <= 0 {
                 vm.pc = c as usize;
             }
 
@@ -182,6 +238,7 @@ fn main() -> io::Result<()> {
                             copy_framebuffer_to_surface(&vm.mem, &mut surface);
                             let _ = surface.update_window();
                         }
+                        stdout_lock.flush()?;
                         last_render = now;
                     }
                     // Trigger interrupt
@@ -197,5 +254,6 @@ fn main() -> io::Result<()> {
         }
     }
 
+    stdout_lock.flush()?;
     Ok(())
 }
