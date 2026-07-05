@@ -6,14 +6,19 @@
 // a pointer cast -- has been reimplemented with explicit integer
 // arithmetic that reproduces the same little-endian byte layout instead.
 //
-// Unlike the original, every memory access derived from program-controlled
-// values (the `a`, `b`, `c` operands, and jump/interrupt targets) is
-// bounds-checked explicitly. A corrupted or malicious boot image will
-// produce a clear, descriptive error instead of an out-of-bounds panic or,
-// as in the original C, undefined behavior / a segfault.
+// Every memory access derived from program-controlled values (the `a`,
+// `b`, `c` operands, and jump/interrupt targets) is bounds-checked
+// explicitly. A corrupted or malicious boot image produces a clear,
+// descriptive error instead of an out-of-bounds panic or, as in the
+// original C, undefined behavior / a segfault.
+//
+// `--no-gui` skips SDL entirely: no window is created, framebuffer writes
+// are left as ordinary memory writes (with a one-time notice the first
+// time the boot image touches that region), and keyboard input comes from
+// the terminal itself (raw mode, real typed characters) instead of SDL
+// scancodes, since there's no window to capture those from.
 
 use std::collections::VecDeque;
-use std::env;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
@@ -22,6 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use clap::Parser;
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
 use sdl3::video::WindowSurfaceRef;
@@ -32,8 +38,25 @@ const FB_SIZE: usize = FB_WIDTH * FB_HEIGHT * 4; // bytes
 const MEM_SIZE: usize = 3 << 27; // number of 32-bit words (~1.6 GB)
 const FB_ADDR_BYTES: usize = 0x6000_0000 - FB_SIZE; // byte address
 const FB_ADDR_WORDS: usize = FB_ADDR_BYTES / 4; // word index into `mem`
+const FB_WORD_COUNT: usize = FB_SIZE / 4;
 const DISPLAY_UPDATE_INTERVAL: Duration = Duration::from_millis(1000 / 30); // 30 FPS
 const TIMER_INTERRUPT_THRESHOLD: i64 = 800_000;
+const EVENT_POLL_INTERVAL_INSTRUCTIONS: u32 = 0xFFF; // ~every 4096 instructions
+
+/// Eternal Computer Virtual Machine with framebuffer support.
+#[derive(Parser)]
+#[command(name = "esi_vm", about = "Eternal Computer Virtual Machine")]
+struct Cli {
+    /// Path to the ESI boot image to run
+    binary: String,
+
+    /// Run headless: no window is created, framebuffer writes become
+    /// harmless no-ops (a one-time notice is printed the first time the
+    /// boot image touches the framebuffer), and keyboard input is read
+    /// from the terminal instead of SDL.
+    #[arg(long)]
+    no_gui: bool,
+}
 
 /// A program-controlled memory access (an operand, jump target, or
 /// interrupt vector) landed outside the VM's address space.
@@ -175,6 +198,30 @@ impl Vm {
     }
 }
 
+/// Returns true if `idx` (a word index known to be in-bounds) falls
+/// within the memory-mapped framebuffer region.
+fn is_framebuffer_word(idx: usize) -> bool {
+    idx >= FB_ADDR_WORDS && idx < FB_ADDR_WORDS + FB_WORD_COUNT
+}
+
+/// In --no-gui mode, print a one-time notice the first time the boot
+/// image touches the framebuffer region, since there's no window to
+/// actually display anything. `idx` must already be known to be a valid,
+/// non-negative memory index (i.e. came back from a successful
+/// `Vm::read`/`Vm::write`).
+fn note_framebuffer_access_once(idx: usize, fb_notice_shown: &mut bool) {
+    if *fb_notice_shown {
+        return;
+    }
+    if is_framebuffer_word(idx) {
+        eprintln!(
+            "esi_vm: note: boot image is accessing the framebuffer, but --no-gui is set; \
+             there is no window to display it (this message only prints once)"
+        );
+        *fb_notice_shown = true;
+    }
+}
+
 /// Drain every SDL event currently queued (cheap no-op when the queue is
 /// empty). Keyboard events are queued for the guest program to consume via
 /// `kb_poll`; window-close and the Ctrl+C key combo set `quit_flag` so the
@@ -211,8 +258,48 @@ fn drain_sdl_events(
     }
 }
 
+/// Drain terminal key events (used in --no-gui mode instead of SDL).
+/// Since there's no SDL window to capture scancodes from, this reads
+/// actual typed characters from the terminal (which must already be in
+/// raw mode). Terminals generally don't report key-release events unless
+/// the Kitty keyboard protocol is negotiated, so unlike the SDL path this
+/// effectively only produces "key down" values -- a guest program that
+/// depends on key-up events will behave differently in this mode.
+fn drain_terminal_events(
+    pending_keys: &mut VecDeque<i32>,
+    quit_flag: &AtomicBool,
+) -> io::Result<()> {
+    use crossterm::event::{self, Event as CEvent, KeyCode, KeyEventKind, KeyModifiers};
+
+    while event::poll(Duration::from_secs(0))? {
+        if let CEvent::Key(key_event) = event::read()? {
+            if key_event.kind == KeyEventKind::Release {
+                continue;
+            }
+            if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                quit_flag.store(true, Ordering::SeqCst);
+                continue;
+            }
+            let value = match key_event.code {
+                KeyCode::Char(c) => Some(c as i32),
+                KeyCode::Enter => Some(b'\r' as i32),
+                KeyCode::Backspace => Some(0x08),
+                KeyCode::Tab => Some(b'\t' as i32),
+                KeyCode::Esc => Some(0x1B),
+                _ => None,
+            };
+            if let Some(v) = value {
+                pending_keys.push_back(v);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Pop one pending key event for the guest program.
-/// Returns: positive = key-down scancode, negative = key-up, 0 = none.
+/// Returns: positive = key-down (SDL scancode, or a typed character's
+/// ASCII value in --no-gui mode), negative = key-up (SDL mode only), 0 =
+/// none pending.
 fn kb_poll(pending_keys: &mut VecDeque<i32>) -> i32 {
     pending_keys.pop_front().unwrap_or(0)
 }
@@ -235,6 +322,33 @@ fn copy_framebuffer_to_surface(mem: &[i32], surface: &mut WindowSurfaceRef) {
     });
 }
 
+/// SDL window/event state, only created when running with a GUI. Keeping
+/// the `Sdl` context alongside the subsystems it produced ensures nothing
+/// it owns is torn down early.
+struct GuiState {
+    _sdl_context: sdl3::Sdl,
+    event_pump: sdl3::EventPump,
+    window: sdl3::video::Window,
+}
+
+/// Ensures the terminal is always returned to normal (cooked) mode when
+/// this guard is dropped, however the program exits -- normal completion,
+/// an early error return, or a panic.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> io::Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(RawModeGuard)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("esi_vm: {err}");
@@ -243,16 +357,12 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        let prog_name = args.first().map(String::as_str).unwrap_or("esi_vm");
-        return Err(format!("Usage: {prog_name} <binary>").into());
-    }
+    let cli = Cli::parse();
 
     let mut vm = Vm::new();
     let truncated_words = vm
-        .load_program(&args[1])
-        .map_err(|e| format!("failed to load boot image '{}': {e}", args[1]))?;
+        .load_program(&cli.binary)
+        .map_err(|e| format!("failed to load boot image '{}': {e}", cli.binary))?;
     if truncated_words > 0 {
         eprintln!(
             "esi_vm: warning: boot image is larger than VM memory; {truncated_words} \
@@ -260,31 +370,54 @@ fn run() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    let sdl_context = sdl3::init().map_err(|e| format!("failed to init SDL3: {e}"))?;
-    let video_subsystem = sdl_context
-        .video()
-        .map_err(|e| format!("failed to init video subsystem: {e}"))?;
-    let mut event_pump = sdl_context
-        .event_pump()
-        .map_err(|e| format!("failed to get event pump: {e}"))?;
+    // Only touch SDL at all when running with a GUI. In --no-gui mode no
+    // window is created, so there is nothing to render into.
+    let mut gui: Option<GuiState> = if cli.no_gui {
+        None
+    } else {
+        let sdl_context = sdl3::init().map_err(|e| format!("failed to init SDL3: {e}"))?;
+        let video_subsystem = sdl_context
+            .video()
+            .map_err(|e| format!("failed to init video subsystem: {e}"))?;
+        let event_pump = sdl_context
+            .event_pump()
+            .map_err(|e| format!("failed to get event pump: {e}"))?;
+        let window = video_subsystem
+            .window("ESI Virtual Machine", FB_WIDTH as u32, FB_HEIGHT as u32)
+            .build()
+            .map_err(|e| format!("failed to create window: {e}"))?;
+        Some(GuiState {
+            _sdl_context: sdl_context,
+            event_pump,
+            window,
+        })
+    };
 
-    let window = video_subsystem
-        .window("ESI Virtual Machine", FB_WIDTH as u32, FB_HEIGHT as u32)
-        .build()
-        .map_err(|e| format!("failed to create window: {e}"))?;
+    // In --no-gui mode, put the terminal in raw mode so keystrokes are
+    // delivered immediately (no waiting for Enter, no local echo getting
+    // in the way). The guard restores the terminal on any exit path.
+    let _raw_mode_guard = if cli.no_gui {
+        Some(RawModeGuard::enable().map_err(|e| format!("failed to enable terminal raw mode: {e}"))?)
+    } else {
+        None
+    };
 
     let quit_flag = Arc::new(AtomicBool::new(false));
     {
-        // Handles the case where the terminal (not the SDL window) still
-        // has focus when Ctrl+C is pressed, so it arrives as a real SIGINT
-        // instead of an SDL key event.
+        // Handles Ctrl+C when nothing else captures it first: in GUI mode,
+        // this is the case where the terminal (not the SDL window) still
+        // has focus; in --no-gui mode, raw mode normally intercepts
+        // Ctrl+C as a plain key event before it ever becomes a signal, so
+        // this mostly matters before raw mode is enabled.
         let quit_flag = Arc::clone(&quit_flag);
         ctrlc::set_handler(move || {
             quit_flag.store(true, Ordering::SeqCst);
         })
         .map_err(|e| format!("failed to install Ctrl+C handler: {e}"))?;
     }
+
     let mut pending_keys: VecDeque<i32> = VecDeque::new();
+    let mut fb_notice_shown = false;
 
     let mut last_render = Instant::now() - DISPLAY_UPDATE_INTERVAL;
     let stdout = io::stdout();
@@ -294,14 +427,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     // Translated from the original `do { ... } while (c);` loop: run the
     // body at least once, then stop when the last-fetched `c` is zero.
     loop {
-        // Draining SDL's event queue involves a lock/syscall even when
+        // Draining the event queue involves a lock/syscall even when
         // empty; doing it every single VM instruction (potentially
-        // hundreds of millions per second) was a real cost. Every 4096
+        // hundreds of millions per second) was a real cost. Every ~4096
         // instructions is still far more often than a human can react,
         // so window-close/Ctrl+C/keyboard input all stay responsive.
         event_poll_counter = event_poll_counter.wrapping_add(1);
-        if event_poll_counter & 0xFFF == 0 {
-            drain_sdl_events(&mut event_pump, &mut pending_keys, &quit_flag);
+        if event_poll_counter & EVENT_POLL_INTERVAL_INSTRUCTIONS == 0 {
+            match &mut gui {
+                Some(gui) => drain_sdl_events(&mut gui.event_pump, &mut pending_keys, &quit_flag),
+                None => drain_terminal_events(&mut pending_keys, &quit_flag)?,
+            }
             if quit_flag.load(Ordering::SeqCst) {
                 break;
             }
@@ -334,18 +470,27 @@ fn run() -> Result<(), Box<dyn Error>> {
                 vm.set_pc(c, "subleq branch target")?;
             }
 
+            if gui.is_none() {
+                // `a`/`b` are already validated non-negative in-bounds
+                // word indices at this point (the reads/write above
+                // succeeded), so casting to usize is safe here.
+                note_framebuffer_access_once(a as usize, &mut fb_notice_shown);
+                note_framebuffer_access_once(b as usize, &mut fb_notice_shown);
+            }
+
             // mem[0] and mem[1] are fixed low-memory slots that are
             // always valid given MEM_SIZE, so these two are safe to
             // index directly.
             if vm.mem[0] != 0 {
                 vm.timer += 1;
                 if vm.timer > TIMER_INTERRUPT_THRESHOLD {
-                    // Update display
                     let now = Instant::now();
                     if now.duration_since(last_render) >= DISPLAY_UPDATE_INTERVAL {
-                        if let Ok(mut surface) = window.surface(&event_pump) {
-                            copy_framebuffer_to_surface(&vm.mem, &mut surface);
-                            let _ = surface.update_window();
+                        if let Some(gui) = &mut gui {
+                            if let Ok(mut surface) = gui.window.surface(&gui.event_pump) {
+                                copy_framebuffer_to_surface(&vm.mem, &mut surface);
+                                let _ = surface.update_window();
+                            }
                         }
                         stdout_lock.flush()?;
                         last_render = now;
