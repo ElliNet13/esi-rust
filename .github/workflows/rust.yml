@@ -27,7 +27,7 @@ jobs:
     name: Test (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -35,7 +35,7 @@ jobs:
       # ---- SDL3: built ourselves, independent of cargo ----
       - name: Cache SDL3 install
         id: cache-sdl3
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/sdl3-install
           key: sdl3-linux-${{ env.SDL3_LINK_MODE }}-${{ env.SDL3_VERSION }}
@@ -84,7 +84,7 @@ jobs:
       # ------------------------------------------------------
 
       - name: Cache cargo registry & git
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -94,7 +94,7 @@ jobs:
             cargo-registry-
 
       - name: Cache cargo target dir
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target
           key: cargo-target-linux-${{ env.SDL3_LINK_MODE }}-${{ hashFiles('**/Cargo.lock') }}
@@ -124,13 +124,13 @@ jobs:
             sdl3_lib_glob: "SDL3.dll"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
 
       # ---- Linux: reuse the exact SDL3 build the test job already made ----
       - name: Restore SDL3 install (Linux)
         if: runner.os == 'Linux'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/sdl3-install
           key: sdl3-linux-${{ env.SDL3_LINK_MODE }}-${{ env.SDL3_VERSION }}
@@ -146,7 +146,7 @@ jobs:
       - name: Cache SDL3 install (Windows)
         if: runner.os == 'Windows'
         id: cache-sdl3-windows
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: C:\sdl3-install
           key: sdl3-windows-${{ env.SDL3_VERSION }}
@@ -180,7 +180,7 @@ jobs:
           echo "RUSTFLAGS=-L native=C:\sdl3-install\lib" >> $env:GITHUB_ENV
 
       - name: Cache cargo registry & git
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -190,7 +190,7 @@ jobs:
             cargo-registry-
 
       - name: Cache cargo target dir
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target
           key: cargo-target-${{ runner.os }}-${{ env.SDL3_LINK_MODE }}-${{ hashFiles('**/Cargo.lock') }}
