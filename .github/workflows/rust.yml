@@ -177,6 +177,7 @@ jobs:
           echo "PATH=C:\sdl3-install\bin;$env:PATH" >> $env:GITHUB_ENV
           echo "LIB=C:\sdl3-install\lib;$env:LIB" >> $env:GITHUB_ENV
           echo "INCLUDE=C:\sdl3-install\include;$env:INCLUDE" >> $env:GITHUB_ENV
+          echo "RUSTFLAGS=-L native=C:\sdl3-install\lib" >> $env:GITHUB_ENV
 
       - name: Cache cargo registry & git
         uses: actions/cache@v4
