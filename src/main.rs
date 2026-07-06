@@ -265,6 +265,7 @@ fn drain_sdl_events(
 /// the Kitty keyboard protocol is negotiated, so unlike the SDL path this
 /// effectively only produces "key down" values -- a guest program that
 /// depends on key-up events will behave differently in this mode.
+#[cfg(not(target_arch = "wasm32"))]
 fn drain_terminal_events(
     pending_keys: &mut VecDeque<i32>,
     quit_flag: &AtomicBool,
@@ -293,6 +294,14 @@ fn drain_terminal_events(
             }
         }
     }
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn drain_terminal_events(
+    _pending_keys: &mut VecDeque<i32>,
+    _quit_flag: &AtomicBool,
+) -> io::Result<()> {
     Ok(())
 }
 
@@ -337,14 +346,21 @@ struct GuiState {
 struct RawModeGuard;
 
 impl RawModeGuard {
+    #[cfg(not(target_arch = "wasm32"))]
     fn enable() -> io::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
+        Ok(RawModeGuard)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn enable() -> io::Result<Self> {
         Ok(RawModeGuard)
     }
 }
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
@@ -403,6 +419,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
 
     let quit_flag = Arc::new(AtomicBool::new(false));
+    #[cfg(not(target_arch = "wasm32"))]
     {
         // Handles Ctrl+C when nothing else captures it first: in GUI mode,
         // this is the case where the terminal (not the SDL window) still
