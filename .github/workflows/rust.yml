@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  SDL3_VERSION: release-3.4.12
 
 jobs:
   test-linux:
@@ -16,22 +17,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Cache SDL3 install folder
       - name: Cache SDL3
         id: cache-sdl3
         uses: actions/cache@v4
         with:
           path: /tmp/sdl3-install
-          key: sdl3-linux-3.1.0
+          key: sdl3-linux-${{ env.SDL3_VERSION }}
 
-      # Build SDL3 only if cache miss
-      - name: Build SDL3 (Linux)
+      - name: Build SDL3 (Linux, only if cache miss)
         if: steps.cache-sdl3.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y git cmake ninja-build build-essential pkg-config
 
-          git clone --depth 1 --branch release-3.1.0 https://github.com/libsdl-org/SDL.git
+          git clone --depth 1 --branch $SDL3_VERSION https://github.com/libsdl-org/SDL.git
           cd SDL
 
           cmake -B build -S . \
@@ -41,8 +40,7 @@ jobs:
           cmake --build build -j
           cmake --install build
 
-      # Expose SDL3 to pkg-config + linker
-      - name: Setup SDL3 environment
+      - name: Setup SDL3 env
         run: |
           echo "PKG_CONFIG_PATH=/tmp/sdl3-install/lib/pkgconfig" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
@@ -72,7 +70,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # -------------------------
-      # Linux SDL3 (cached build)
+      # Linux SDL3 cached build
       # -------------------------
       - name: Cache SDL3 (Linux)
         if: runner.os == 'Linux'
@@ -80,15 +78,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/sdl3-install
-          key: sdl3-linux-3.1.0
+          key: sdl3-linux-${{ env.SDL3_VERSION }}
 
-      - name: Build SDL3 (Linux)
+      - name: Build SDL3 (Linux, cache miss only)
         if: runner.os == 'Linux' && steps.cache-sdl3.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y git cmake ninja-build build-essential pkg-config
 
-          git clone --depth 1 --branch release-3.1.0 https://github.com/libsdl-org/SDL.git
+          git clone --depth 1 --branch $SDL3_VERSION https://github.com/libsdl-org/SDL.git
           cd SDL
 
           cmake -B build -S . \
@@ -105,7 +103,7 @@ jobs:
           echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
 
       # -------------------------
-      # Windows SDL3 (vcpkg)
+      # Windows (vcpkg prebuilt)
       # -------------------------
       - name: Install SDL3 (Windows)
         if: runner.os == 'Windows'
@@ -120,4 +118,11 @@ jobs:
       - name: Build release
         run: cargo build --release --verbose
 
-     
+      # -------------------------
+      # Upload artifact
+      # -------------------------
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/release/${{ matrix.binary }}
