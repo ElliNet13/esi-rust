@@ -82,10 +82,10 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: linux
-            binary: esi-vm
+            binary: esi_vm
           #- os: windows-latest
           #  artifact: windows
-          #  binary: esi-vm.exe
+          #  binary: esi_vm.exe
           # Windows removed for now until I can get it to work
 
     runs-on: ${{ matrix.os }}
