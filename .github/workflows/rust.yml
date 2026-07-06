@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # -----------------------------
-      # SDL3 CACHE
+      # SDL3 CACHE (LINUX)
       # -----------------------------
       - name: Cache SDL3
         id: cache-sdl3
@@ -28,9 +28,9 @@ jobs:
           key: sdl3-linux-${{ env.SDL3_VERSION }}
 
       # -----------------------------
-      # SDL3 BUILD DEPS ONLY IF NEEDED
+      # SDL3 DEPS ONLY IF NEEDED
       # -----------------------------
-      - name: Install SDL3 build dependencies (only on cache miss)
+      - name: Install SDL3 build deps (only if cache miss)
         if: steps.cache-sdl3.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
@@ -58,7 +58,7 @@ jobs:
           cmake --install build
 
       # -----------------------------
-      # EXPOSE SDL3
+      # SDL3 ENV
       # -----------------------------
       - name: Setup SDL3 env
         run: |
@@ -66,7 +66,7 @@ jobs:
           echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
 
       # -----------------------------
-      # RUST BUILD (NO SDL DEPS)
+      # RUST BUILD
       # -----------------------------
       - name: Build
         run: cargo build --verbose
@@ -104,7 +104,36 @@ jobs:
           key: sdl3-linux-${{ env.SDL3_VERSION }}
 
       # -----------------------------
-      # SDL3 DEPS ONLY IF CACHE MISS
+      # WINDOWS VCPKG SETUP
+      # -----------------------------
+      - name: Setup vcpkg
+        if: runner.os == 'Windows'
+        uses: friendlyanon/setup-vcpkg@v1
+        with:
+          committish: 2024.11.16
+
+      # -----------------------------
+      # CACHE VCPKG INSTALLED PACKAGES
+      # -----------------------------
+      - name: Cache vcpkg installed packages
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            vcpkg_installed
+            ${{ env.VCPKG_ROOT }}/installed
+          key: vcpkg-${{ runner.os }}-sdl3
+
+      # -----------------------------
+      # INSTALL SDL3 VIA VCPKG (ONLY IF CACHE MISS)
+      # -----------------------------
+      - name: Install SDL3 (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vcpkg install sdl3 --triplet x64-windows
+
+      # -----------------------------
+      # BUILD SDL3 LINUX (ONLY IF NEEDED)
       # -----------------------------
       - name: Install SDL3 deps (Linux cache miss only)
         if: runner.os == 'Linux' && steps.cache-sdl3.outputs.cache-hit != 'true'
@@ -117,9 +146,6 @@ jobs:
             libxkbcommon-dev libgl1-mesa-dev libvulkan-dev \
             libwayland-dev libdrm-dev libgbm-dev
 
-      # -----------------------------
-      # BUILD SDL3 ONLY IF NEEDED
-      # -----------------------------
       - name: Build SDL3 (Linux cache miss only)
         if: runner.os == 'Linux' && steps.cache-sdl3.outputs.cache-hit != 'true'
         run: |
@@ -138,19 +164,6 @@ jobs:
         run: |
           echo "PKG_CONFIG_PATH=/tmp/sdl3-install/lib/pkgconfig" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
-
-      # -----------------------------
-      # WINDOWS: REAL vcpkg ACTION
-      # -----------------------------
-      - name: Setup vcpkg (Windows)
-        if: runner.os == 'Windows'
-        uses: friendlyanon/setup-vcpkg@v1
-        with:
-          committish: 2024.11.16
-
-      - name: Install SDL3 (Windows)
-        if: runner.os == 'Windows'
-        run: vcpkg install sdl3 --triplet x64-windows
 
       # -----------------------------
       # RUST BUILD
