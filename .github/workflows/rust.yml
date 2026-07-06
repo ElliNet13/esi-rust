@@ -1,182 +1,234 @@
-name: Rust
+name: CI/CD
 
 on:
   push:
-    branches: ["main"]
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      sdl3_linking:
+        description: "SDL3 linking mode on Linux (static recommended until SDL3 lands in Debian repos)"
+        type: choice
+        options: [static, dynamic]
+        default: static
 
 env:
   CARGO_TERM_COLOR: always
-  SDL3_VERSION: release-3.4.12
+  # Pin the exact SDL3 tag you want to build. Bump this to rebuild SDL3.
+  SDL3_VERSION: "release-3.2.10"
+  SDL3_REPO: "https://github.com/libsdl-org/SDL.git"
+  # Defaults to 'static' on push/PR (no manual input available then).
+  # Switch this default to 'dynamic' once SDL3 is packaged in Debian/Ubuntu.
+  SDL3_LINK_MODE: ${{ github.event.inputs.sdl3_linking || 'static' }}
 
 jobs:
-  test-linux:
+  test:
+    name: Test (Linux)
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      # -----------------------------
-      # SDL3 CACHE (LINUX)
-      # -----------------------------
-      - name: Cache SDL3
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # ---- SDL3: built ourselves, independent of cargo ----
+      - name: Cache SDL3 install
         id: cache-sdl3
         uses: actions/cache@v4
         with:
-          path: /tmp/sdl3-install
-          key: sdl3-linux-${{ env.SDL3_VERSION }}
+          path: ~/sdl3-install
+          key: sdl3-linux-${{ env.SDL3_LINK_MODE }}-${{ env.SDL3_VERSION }}
 
-      # -----------------------------
-      # SDL3 DEPS ONLY IF NEEDED
-      # -----------------------------
-      - name: Install SDL3 build deps (only if cache miss)
+      - name: Install SDL3 build dependencies
         if: steps.cache-sdl3.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential git make pkg-config cmake ninja-build \
-            libasound2-dev libpulse-dev \
-            libx11-dev libxext-dev libxrandr-dev \
-            libxkbcommon-dev libgl1-mesa-dev libvulkan-dev \
-            libwayland-dev libdrm-dev libgbm-dev
+          sudo apt-get install -y cmake ninja-build git \
+            libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxinerama-dev libgl1-mesa-dev \
+            libwayland-dev libdecor-0-dev
 
-      # -----------------------------
-      # BUILD SDL3 ONLY IF NEEDED
-      # -----------------------------
-      - name: Build SDL3 (cache miss only)
-        if: steps.cache-sdl3.outputs.cache-hit != 'true'
+      - name: Build SDL3 from source (static)
+        if: steps.cache-sdl3.outputs.cache-hit != 'true' && env.SDL3_LINK_MODE == 'static'
         run: |
-          git clone --depth 1 --branch $SDL3_VERSION https://github.com/libsdl-org/SDL.git
-          cd SDL
-
-          cmake -B build -S . \
+          git clone --depth 1 --branch "$SDL3_VERSION" "$SDL3_REPO" /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/tmp/sdl3-install
+            -DCMAKE_INSTALL_PREFIX="$HOME/sdl3-install" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DSDL_STATIC=ON \
+            -DSDL_SHARED=OFF \
+            -DSDL_TEST_LIBRARY=OFF
+          cmake --build /tmp/SDL/build --parallel
+          cmake --install /tmp/SDL/build
 
-          cmake --build build -j
-          cmake --install build
-
-      # -----------------------------
-      # SDL3 ENV
-      # -----------------------------
-      - name: Setup SDL3 env
+      - name: Build SDL3 from source (dynamic)
+        if: steps.cache-sdl3.outputs.cache-hit != 'true' && env.SDL3_LINK_MODE == 'dynamic'
         run: |
-          echo "PKG_CONFIG_PATH=/tmp/sdl3-install/lib/pkgconfig" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
+          git clone --depth 1 --branch "$SDL3_VERSION" "$SDL3_REPO" /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$HOME/sdl3-install" \
+            -DSDL_STATIC=OFF \
+            -DSDL_SHARED=ON \
+            -DSDL_TEST_LIBRARY=OFF
+          cmake --build /tmp/SDL/build --parallel
+          cmake --install /tmp/SDL/build
 
-      # -----------------------------
-      # RUST BUILD
-      # -----------------------------
-      - name: Build
+      - name: Export SDL3 env vars
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/sdl3-install/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/sdl3-install/lib" >> "$GITHUB_ENV"
+          echo "SDL3_DIR=$HOME/sdl3-install/lib/cmake/SDL3" >> "$GITHUB_ENV"
+      # ------------------------------------------------------
+
+      - name: Cache cargo registry & git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-
+
+      - name: Cache cargo target dir
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-target-linux-${{ env.SDL3_LINK_MODE }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-linux-${{ env.SDL3_LINK_MODE }}-
+
+      - name: Build (dev)
         run: cargo build --verbose
 
       - name: Run tests
         run: cargo test --verbose
 
-
   release:
-    needs: test-linux
+    name: Release (${{ matrix.os }})
+    needs: test
+    if: needs.test.result == 'success'
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: linux
-            binary: esi_vm
-          #- os: windows-latest
-          #  artifact: windows
-          #  binary: esi_vm.exe
-          # Windows removed for now until I can get it to work
-
+            artifact_name: esi_vm
+            asset_name: esi_vm-linux
+          - os: windows-latest
+            artifact_name: esi_vm.exe
+            asset_name: esi_vm-windows
+            sdl3_lib_glob: "SDL3.dll"
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
 
-      # -----------------------------
-      # LINUX SDL3 CACHE
-      # -----------------------------
-      - name: Cache SDL3 (Linux)
+      # ---- Linux: reuse the exact SDL3 build the test job already made ----
+      - name: Restore SDL3 install (Linux)
         if: runner.os == 'Linux'
-        id: cache-sdl3
         uses: actions/cache@v4
         with:
-          path: /tmp/sdl3-install
-          key: sdl3-linux-${{ env.SDL3_VERSION }}
+          path: ~/sdl3-install
+          key: sdl3-linux-${{ env.SDL3_LINK_MODE }}-${{ env.SDL3_VERSION }}
 
-      # -----------------------------
-      # WINDOWS VCPKG SETUP
-      # -----------------------------
-      - name: Setup vcpkg
+      - name: Export SDL3 env vars (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/sdl3-install/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/sdl3-install/lib" >> "$GITHUB_ENV"
+          echo "SDL3_DIR=$HOME/sdl3-install/lib/cmake/SDL3" >> "$GITHUB_ENV"
+
+      # ---- Windows: no Linux artifact to reuse, build independently (still dynamic) ----
+      - name: Cache SDL3 install (Windows)
         if: runner.os == 'Windows'
-        uses: friendlyanon/setup-vcpkg@v1
+        id: cache-sdl3-windows
+        uses: actions/cache@v4
         with:
-          committish: 2024.11.16
+          path: C:\sdl3-install
+          key: sdl3-windows-${{ env.SDL3_VERSION }}
 
-      # -----------------------------
-      # CACHE VCPKG INSTALLED PACKAGES
-      # -----------------------------
-      - name: Cache vcpkg installed packages
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows' && steps.cache-sdl3-windows.outputs.cache-hit != 'true'
+        run: choco install ninja -y
+
+      - name: Build SDL3 from source (Windows)
+        if: runner.os == 'Windows' && steps.cache-sdl3-windows.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          git clone --depth 1 --branch %SDL3_VERSION% %SDL3_REPO% C:\SDL
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -S C:\SDL -B C:\SDL\build -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_INSTALL_PREFIX=C:\sdl3-install ^
+            -DSDL_SHARED=ON ^
+            -DSDL_STATIC=OFF ^
+            -DSDL_TEST_LIBRARY=OFF
+          cmake --build C:\SDL\build --parallel
+          cmake --install C:\SDL\build
+
+      - name: Export SDL3 env vars (Windows)
         if: runner.os == 'Windows'
+        run: |
+          echo "SDL3_DIR=C:\sdl3-install\cmake" >> $env:GITHUB_ENV
+          echo "PATH=C:\sdl3-install\bin;$env:PATH" >> $env:GITHUB_ENV
+          echo "LIB=C:\sdl3-install\lib;$env:LIB" >> $env:GITHUB_ENV
+          echo "INCLUDE=C:\sdl3-install\include;$env:INCLUDE" >> $env:GITHUB_ENV
+
+      - name: Cache cargo registry & git
         uses: actions/cache@v4
         with:
           path: |
-            vcpkg_installed
-            ${{ env.VCPKG_ROOT }}/installed
-          key: vcpkg-${{ runner.os }}-sdl3
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-
 
-      # -----------------------------
-      # INSTALL SDL3 VIA VCPKG (ONLY IF CACHE MISS)
-      # -----------------------------
-      - name: Install SDL3 (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          vcpkg install sdl3 --triplet x64-windows
+      - name: Cache cargo target dir
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-target-${{ runner.os }}-${{ env.SDL3_LINK_MODE }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-${{ env.SDL3_LINK_MODE }}-
 
-      # -----------------------------
-      # BUILD SDL3 LINUX (ONLY IF NEEDED)
-      # -----------------------------
-      - name: Install SDL3 deps (Linux cache miss only)
-        if: runner.os == 'Linux' && steps.cache-sdl3.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential git make pkg-config cmake ninja-build \
-            libasound2-dev libpulse-dev \
-            libx11-dev libxext-dev libxrandr-dev \
-            libxkbcommon-dev libgl1-mesa-dev libvulkan-dev \
-            libwayland-dev libdrm-dev libgbm-dev
-
-      - name: Build SDL3 (Linux cache miss only)
-        if: runner.os == 'Linux' && steps.cache-sdl3.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 --branch $SDL3_VERSION https://github.com/libsdl-org/SDL.git
-          cd SDL
-
-          cmake -B build -S . \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/tmp/sdl3-install
-
-          cmake --build build -j
-          cmake --install build
-
-      - name: Setup SDL3 env (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          echo "PKG_CONFIG_PATH=/tmp/sdl3-install/lib/pkgconfig" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
-
-      # -----------------------------
-      # RUST BUILD
-      # -----------------------------
       - name: Build release
         run: cargo build --release --verbose
 
-      # -----------------------------
-      # ARTIFACT
-      # -----------------------------
+      - name: Stage release bundle (Linux, static)
+        if: runner.os == 'Linux' && env.SDL3_LINK_MODE == 'static'
+        run: |
+          mkdir -p dist
+          cp target/release/${{ matrix.artifact_name }} dist/
+
+      - name: Stage release bundle (Linux, dynamic)
+        if: runner.os == 'Linux' && env.SDL3_LINK_MODE == 'dynamic'
+        run: |
+          mkdir -p dist
+          cp target/release/${{ matrix.artifact_name }} dist/
+          cp -P ~/sdl3-install/lib/*.so* dist/ 2>/dev/null || true
+
+      - name: Stage release bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target\release\${{ matrix.artifact_name }} dist\
+          Copy-Item C:\sdl3-install\bin\${{ matrix.sdl3_lib_glob }} dist\
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: target/release/${{ matrix.binary }}
+          name: ${{ matrix.asset_name }}
+          path: dist/
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+
