@@ -28,21 +28,21 @@ jobs:
           key: sdl3-linux-${{ env.SDL3_VERSION }}
 
       # -----------------------------
-      # INSTALL DEPS ONLY IF NEEDED
+      # SDL3 BUILD DEPS ONLY IF NEEDED
       # -----------------------------
-      - name: Install SDL3 build deps (only if cache miss)
+      - name: Install SDL3 build dependencies (only on cache miss)
         if: steps.cache-sdl3.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential git make pkg-config cmake ninja-build \
-            libasound2-dev libpulse-dev libaudio-dev \
+            libasound2-dev libpulse-dev \
             libx11-dev libxext-dev libxrandr-dev \
             libxkbcommon-dev libgl1-mesa-dev libvulkan-dev \
             libwayland-dev libdrm-dev libgbm-dev
 
       # -----------------------------
-      # BUILD SDL3 ONLY IF MISSING
+      # BUILD SDL3 ONLY IF NEEDED
       # -----------------------------
       - name: Build SDL3 (cache miss only)
         if: steps.cache-sdl3.outputs.cache-hit != 'true'
@@ -58,7 +58,7 @@ jobs:
           cmake --install build
 
       # -----------------------------
-      # EXPOSE SDL3 TO RUST (if needed)
+      # EXPOSE SDL3
       # -----------------------------
       - name: Setup SDL3 env
         run: |
@@ -66,7 +66,7 @@ jobs:
           echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
 
       # -----------------------------
-      # RUST (NO SDL DEPS HERE)
+      # RUST BUILD (NO SDL DEPS)
       # -----------------------------
       - name: Build
         run: cargo build --verbose
@@ -93,73 +93,4 @@ jobs:
       - uses: actions/checkout@v4
 
       # -----------------------------
-      # LINUX: SDL3 CACHE
-      # -----------------------------
-      - name: Cache SDL3 (Linux)
-        if: runner.os == 'Linux'
-        id: cache-sdl3
-        uses: actions/cache@v4
-        with:
-          path: /tmp/sdl3-install
-          key: sdl3-linux-${{ env.SDL3_VERSION }}
-
-      # -----------------------------
-      # LINUX: DEPS ONLY IF CACHE MISS
-      # -----------------------------
-      - name: Install SDL3 build deps (Linux only if needed)
-        if: runner.os == 'Linux' && steps.cache-sdl3.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential git make pkg-config cmake ninja-build \
-            libasound2-dev libpulse-dev libaudio-dev \
-            libx11-dev libxext-dev libxrandr-dev \
-            libxkbcommon-dev libgl1-mesa-dev libvulkan-dev \
-            libwayland-dev libdrm-dev libgbm-dev
-
-      # -----------------------------
-      # LINUX: BUILD SDL3 ONLY IF NEEDED
-      # -----------------------------
-      - name: Build SDL3 (Linux cache miss only)
-        if: runner.os == 'Linux' && steps.cache-sdl3.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 --branch $SDL3_VERSION https://github.com/libsdl-org/SDL.git
-          cd SDL
-
-          cmake -B build -S . \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/tmp/sdl3-install
-
-          cmake --build build -j
-          cmake --install build
-
-      - name: Setup SDL3 env (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          echo "PKG_CONFIG_PATH=/tmp/sdl3-install/lib/pkgconfig" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
-
-      # -----------------------------
-      # WINDOWS: vcpkg (NO DEPS, NO BUILD)
-      # -----------------------------
-      - name: Install SDL3 (Windows)
-        if: runner.os == 'Windows'
-        uses: microsoft/vcpkg-action@v1
-        with:
-          pkgs: sdl3
-          triplet: x64-windows
-
-      # -----------------------------
-      # BUILD RUST (PURE)
-      # -----------------------------
-      - name: Build release
-        run: cargo build --release --verbose
-
-      # -----------------------------
-      # ARTIFACT
-      # -----------------------------
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: target/release/${{ matrix.binary }}
+      # L
