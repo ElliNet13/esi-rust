@@ -17,6 +17,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # -----------------------------
+      # FULL SDL3 DEPENDENCIES
+      # -----------------------------
+      - name: Install SDL3 dependencies (FULL)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git make pkg-config cmake ninja-build \
+            gnome-desktop-testing \
+            libasound2-dev \
+            libpulse-dev \
+            libaudio-dev \
+            libfribidi-dev \
+            libjack-dev \
+            libsndio-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxss-dev \
+            libxtst-dev \
+            libxkbcommon-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libgl1-mesa-dev \
+            libgles2-mesa-dev \
+            libegl1-mesa-dev \
+            libdbus-1-dev \
+            libibus-1.0-dev \
+            libudev-dev \
+            libthai-dev \
+            libusb-1.0-0-dev \
+            libpipewire-0.3-dev \
+            libwayland-dev \
+            libdecor-0-dev \
+            liburing-dev \
+            libvulkan-dev \
+            vulkan-tools
+
+      # -----------------------------
+      # SDL3 CACHE
+      # -----------------------------
       - name: Cache SDL3
         id: cache-sdl3
         uses: actions/cache@v4
@@ -24,12 +68,12 @@ jobs:
           path: /tmp/sdl3-install
           key: sdl3-linux-${{ env.SDL3_VERSION }}
 
-      - name: Build SDL3 (Linux, only if cache miss)
+      # -----------------------------
+      # BUILD SDL3 ONLY IF NEEDED
+      # -----------------------------
+      - name: Build SDL3 (Linux)
         if: steps.cache-sdl3.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git cmake ninja-build build-essential pkg-config
-
           git clone --depth 1 --branch $SDL3_VERSION https://github.com/libsdl-org/SDL.git
           cd SDL
 
@@ -40,11 +84,17 @@ jobs:
           cmake --build build -j
           cmake --install build
 
-      - name: Setup SDL3 env
+      # -----------------------------
+      # SDL3 ENV
+      # -----------------------------
+      - name: Setup SDL3 environment
         run: |
           echo "PKG_CONFIG_PATH=/tmp/sdl3-install/lib/pkgconfig" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
 
+      # -----------------------------
+      # RUST BUILD + TEST
+      # -----------------------------
       - name: Build
         run: cargo build --verbose
 
@@ -69,9 +119,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # -------------------------
-      # Linux SDL3 cached build
-      # -------------------------
+      # -----------------------------
+      # LINUX SDL3 CACHE + BUILD
+      # -----------------------------
+      - name: Install SDL3 dependencies (Linux full)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git make pkg-config cmake ninja-build \
+            gnome-desktop-testing \
+            libasound2-dev \
+            libpulse-dev \
+            libaudio-dev \
+            libfribidi-dev \
+            libjack-dev \
+            libsndio-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxss-dev \
+            libxtst-dev \
+            libxkbcommon-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libgl1-mesa-dev \
+            libgles2-mesa-dev \
+            libegl1-mesa-dev \
+            libdbus-1-dev \
+            libibus-1.0-dev \
+            libudev-dev \
+            libthai-dev \
+            libusb-1.0-0-dev \
+            libpipewire-0.3-dev \
+            libwayland-dev \
+            libdecor-0-dev \
+            liburing-dev \
+            libvulkan-dev \
+            vulkan-tools
+
       - name: Cache SDL3 (Linux)
         if: runner.os == 'Linux'
         id: cache-sdl3
@@ -80,12 +169,9 @@ jobs:
           path: /tmp/sdl3-install
           key: sdl3-linux-${{ env.SDL3_VERSION }}
 
-      - name: Build SDL3 (Linux, cache miss only)
+      - name: Build SDL3 (Linux cache miss)
         if: runner.os == 'Linux' && steps.cache-sdl3.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git cmake ninja-build build-essential pkg-config
-
           git clone --depth 1 --branch $SDL3_VERSION https://github.com/libsdl-org/SDL.git
           cd SDL
 
@@ -102,9 +188,9 @@ jobs:
           echo "PKG_CONFIG_PATH=/tmp/sdl3-install/lib/pkgconfig" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=/tmp/sdl3-install/lib" >> $GITHUB_ENV
 
-      # -------------------------
-      # Windows (vcpkg prebuilt)
-      # -------------------------
+      # -----------------------------
+      # WINDOWS SDL3 (vcpkg)
+      # -----------------------------
       - name: Install SDL3 (Windows)
         if: runner.os == 'Windows'
         uses: microsoft/vcpkg-action@v1
@@ -112,15 +198,15 @@ jobs:
           pkgs: sdl3
           triplet: x64-windows
 
-      # -------------------------
-      # Build release
-      # -------------------------
+      # -----------------------------
+      # BUILD RELEASE
+      # -----------------------------
       - name: Build release
         run: cargo build --release --verbose
 
-      # -------------------------
-      # Upload artifact
-      # -------------------------
+      # -----------------------------
+      # ARTIFACT
+      # -----------------------------
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
