@@ -227,13 +227,13 @@ jobs:
         if: runner.os == 'Linux' && env.SDL3_LINK_MODE == 'static'
         run: |
           mkdir -p dist
-          cp target/release/${{ matrix.artifact_name }} dist/
+          cp target/release/${{ matrix.artifact_name }} dist/${{ matrix.asset_name }}
 
       - name: Stage release bundle (Linux, dynamic)
         if: runner.os == 'Linux' && env.SDL3_LINK_MODE == 'dynamic'
         run: |
           mkdir -p dist
-          cp target/release/${{ matrix.artifact_name }} dist/
+          cp target/release/${{ matrix.artifact_name }} dist/${{ matrix.asset_name }}
           cp -P ~/sdl3-install/lib/*.so* dist/ 2>/dev/null || true
 
       - name: Stage release bundle (Windows)
