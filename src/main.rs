@@ -45,7 +45,7 @@ const EVENT_POLL_INTERVAL_INSTRUCTIONS: u32 = 0xFFF; // ~every 4096 instructions
 
 /// Eternal Computer Virtual Machine with framebuffer support.
 #[derive(Parser)]
-#[command(name = "esi_vm", about = "Eternal Computer Virtual Machine")]
+#[command(name = "esi_vm", version, about = "Eternal Computer Virtual Machine")]
 struct Cli {
     /// Path to the ESI boot image to run
     binary: String,
