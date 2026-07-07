@@ -24,8 +24,16 @@ env:
 
 jobs:
   test:
-    name: Test (Linux)
-    runs-on: ubuntu-latest
+    name: Test (Linux, ${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - uses: actions/checkout@v7
 
@@ -38,7 +46,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/sdl3-install
-          key: sdl3-linux-${{ env.SDL3_LINK_MODE }}-${{ env.SDL3_VERSION }}
+          key: sdl3-linux-${{ matrix.arch }}-${{ env.SDL3_LINK_MODE }}-${{ env.SDL3_VERSION }}
 
       - name: Install SDL3 build dependencies
         if: steps.cache-sdl3.outputs.cache-hit != 'true'
@@ -97,9 +105,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: target
-          key: cargo-target-linux-${{ env.SDL3_LINK_MODE }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-target-linux-${{ matrix.arch }}-${{ env.SDL3_LINK_MODE }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-target-linux-${{ env.SDL3_LINK_MODE }}-
+            cargo-target-linux-${{ matrix.arch }}-${{ env.SDL3_LINK_MODE }}-
 
       - name: Build (dev)
         run: cargo build --verbose
@@ -108,7 +116,7 @@ jobs:
         run: cargo test --verbose
 
   release:
-    name: Release (${{ matrix.os }})
+    name: Release (${{ matrix.os }}, ${{ matrix.arch }})
     needs: test
     if: needs.test.result == 'success'
     strategy:
@@ -116,11 +124,22 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            arch: x86_64
             artifact_name: esi_vm
-            asset_name: esi_vm-linux
+            asset_name: esi_vm-linux-x86_64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            artifact_name: esi_vm
+            asset_name: esi_vm-linux-arm64
           - os: windows-latest
+            arch: x86_64
             artifact_name: esi_vm.exe
-            asset_name: esi_vm-windows
+            asset_name: esi_vm-windows-x86_64
+            sdl3_lib_glob: "SDL3.dll"
+          - os: windows-11-arm
+            arch: arm64
+            artifact_name: esi_vm.exe
+            asset_name: esi_vm-windows-arm64
             sdl3_lib_glob: "SDL3.dll"
     runs-on: ${{ matrix.os }}
     steps:
@@ -133,7 +152,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/sdl3-install
-          key: sdl3-linux-${{ env.SDL3_LINK_MODE }}-${{ env.SDL3_VERSION }}
+          key: sdl3-linux-${{ matrix.arch }}-${{ env.SDL3_LINK_MODE }}-${{ env.SDL3_VERSION }}
 
       - name: Export SDL3 env vars (Linux)
         if: runner.os == 'Linux'
@@ -149,7 +168,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: C:\sdl3-install
-          key: sdl3-windows-${{ env.SDL3_VERSION }}
+          key: sdl3-windows-${{ matrix.arch }}-${{ env.SDL3_VERSION }}
 
       - name: Install Ninja (Windows)
         if: runner.os == 'Windows' && steps.cache-sdl3-windows.outputs.cache-hit != 'true'
@@ -160,7 +179,11 @@ jobs:
         shell: cmd
         run: |
           git clone --depth 1 --branch %SDL3_VERSION% %SDL3_REPO% C:\SDL
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+          if "${{ matrix.arch }}"=="arm64" (
+            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsarm64.bat" || call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsarm64.bat"
+          ) else (
+            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+          )
           cmake -S C:\SDL -B C:\SDL\build -G Ninja ^
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_INSTALL_PREFIX=C:\sdl3-install ^
@@ -193,9 +216,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: target
-          key: cargo-target-${{ runner.os }}-${{ env.SDL3_LINK_MODE }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-target-${{ runner.os }}-${{ matrix.arch }}-${{ env.SDL3_LINK_MODE }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-target-${{ runner.os }}-${{ env.SDL3_LINK_MODE }}-
+            cargo-target-${{ runner.os }}-${{ matrix.arch }}-${{ env.SDL3_LINK_MODE }}-
 
       - name: Build release
         run: cargo build --release --verbose
@@ -262,7 +285,7 @@ jobs:
             --notes "Automated build from the latest main. Not a stable release; may be broken." \
             --prerelease \
             --target "$GITHUB_SHA" \
-            artifacts/esi_vm-linux/* artifacts/esi_vm-windows/*
+            artifacts/esi_vm-linux-x86_64/* artifacts/esi_vm-linux-arm64/* artifacts/esi_vm-windows-x86_64/* artifacts/esi_vm-windows-arm64/*
 
       # Real versioned release when a v* tag is pushed.
       - name: Publish tagged release
@@ -275,11 +298,11 @@ jobs:
             gh release upload "${{ github.ref_name }}" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber \
-              artifacts/esi_vm-linux/* artifacts/esi_vm-windows/*
+              artifacts/esi_vm-linux-x86_64/* artifacts/esi_vm-linux-arm64/* artifacts/esi_vm-windows-x86_64/* artifacts/esi_vm-windows-arm64/*
           else
             gh release create "${{ github.ref_name }}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "${{ github.ref_name }}" \
               --generate-notes \
-              artifacts/esi_vm-linux/* artifacts/esi_vm-windows/*
+              artifacts/esi_vm-linux-x86_64/* artifacts/esi_vm-linux-arm64/* artifacts/esi_vm-windows-x86_64/* artifacts/esi_vm-windows-arm64/*
           fi
