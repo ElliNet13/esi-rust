@@ -80,8 +80,33 @@ impl fmt::Display for OutOfBoundsError {
 
 impl Error for OutOfBoundsError {}
 
+/// Lazily-allocated memory: only stores values that have been written to
+/// or explicitly read, defaulting to zero for unallocated regions.
+struct LazyMemory {
+    data: Vec<i32>,
+}
+
+impl LazyMemory {
+    fn new() -> Self {
+        LazyMemory {
+            data: Vec::new(),
+        }
+    }
+
+    fn get(&self, idx: usize) -> i32 {
+        self.data.get(idx).copied().unwrap_or(0)
+    }
+
+    fn set(&mut self, idx: usize, val: i32) {
+        if idx >= self.data.len() {
+            self.data.resize(idx + 1, 0);
+        }
+        self.data[idx] = val;
+    }
+}
+
 struct Vm {
-    mem: Vec<i32>,
+    mem: LazyMemory,
     pc: usize,
     timer: i64,
 }
@@ -89,7 +114,7 @@ struct Vm {
 impl Vm {
     fn new() -> Self {
         Vm {
-            mem: vec![0i32; MEM_SIZE],
+            mem: LazyMemory::new(),
             pc: 0,
             timer: 0,
         }
@@ -100,11 +125,11 @@ impl Vm {
     /// low-memory slots, which are always valid by construction).
     fn checked_index(&self, idx: i32, context: &'static str) -> Result<usize, OutOfBoundsError> {
         let idx = idx as i64;
-        if idx < 0 || idx as u64 >= self.mem.len() as u64 {
+        if idx < 0 || idx as u64 >= MEM_SIZE as u64 {
             Err(OutOfBoundsError {
                 context,
                 index: idx,
-                len: self.mem.len(),
+                len: MEM_SIZE,
             })
         } else {
             Ok(idx as usize)
@@ -113,12 +138,12 @@ impl Vm {
 
     fn read(&self, idx: i32, context: &'static str) -> Result<i32, OutOfBoundsError> {
         let i = self.checked_index(idx, context)?;
-        Ok(self.mem[i])
+        Ok(self.mem.get(i))
     }
 
     fn write(&mut self, idx: i32, value: i32, context: &'static str) -> Result<(), OutOfBoundsError> {
         let i = self.checked_index(idx, context)?;
-        self.mem[i] = value;
+        self.mem.set(i, value);
         Ok(())
     }
 
@@ -142,13 +167,13 @@ impl Vm {
         let mut truncated = 0usize;
 
         for (i, chunk) in bytes.chunks(4).enumerate() {
-            if i >= self.mem.len() {
+            if i >= MEM_SIZE {
                 truncated = total_words - i;
                 break;
             }
             let mut word_bytes = [0u8; 4];
             word_bytes[..chunk.len()].copy_from_slice(chunk);
-            self.mem[i] = i32::from_le_bytes(word_bytes);
+            self.mem.set(i, i32::from_le_bytes(word_bytes));
         }
         Ok(truncated)
     }
@@ -160,14 +185,14 @@ impl Vm {
     /// the indirect operand it points at, however, is program-controlled
     /// and is bounds-checked.
     fn fetch(&mut self) -> Result<i32, OutOfBoundsError> {
-        if self.pc >= self.mem.len() {
+        if self.pc >= MEM_SIZE {
             return Err(OutOfBoundsError {
                 context: "instruction fetch (pc ran off the end of memory)",
                 index: self.pc as i64,
-                len: self.mem.len(),
+                len: MEM_SIZE,
             });
         }
-        let raw = self.mem[self.pc];
+        let raw = self.mem.get(self.pc);
         self.pc += 1;
         if raw & 1 != 0 {
             let addr = raw / 4;
@@ -191,10 +216,10 @@ impl Vm {
         let sec = now.as_secs() as i64;
         let nsec = now.subsec_nanos() as i64;
 
-        self.mem[64] = (sec & 0xFFFF_FFFF) as i32;
-        self.mem[65] = ((sec >> 32) & 0xFFFF_FFFF) as i32;
-        self.mem[66] = (nsec & 0xFFFF_FFFF) as i32;
-        self.mem[67] = ((nsec >> 32) & 0xFFFF_FFFF) as i32;
+        self.mem.set(64, (sec & 0xFFFF_FFFF) as i32);
+        self.mem.set(65, ((sec >> 32) & 0xFFFF_FFFF) as i32);
+        self.mem.set(66, (nsec & 0xFFFF_FFFF) as i32);
+        self.mem.set(67, ((nsec >> 32) & 0xFFFF_FFFF) as i32);
     }
 }
 
@@ -318,13 +343,12 @@ fn kb_poll(pending_keys: &mut VecDeque<i32>) -> i32 {
 /// Bounds are clamped against both the surface's actual pixel buffer and
 /// the VM's memory, so a mismatched surface format can't cause an
 /// out-of-range read from `mem`.
-fn copy_framebuffer_to_surface(mem: &[i32], surface: &mut WindowSurfaceRef) {
+fn copy_framebuffer_to_surface(mem: &LazyMemory, surface: &mut WindowSurfaceRef) {
     surface.with_lock_mut(|pixels: &mut [u8]| {
-        let fb_words_available = mem.len().saturating_sub(FB_ADDR_WORDS);
-        let copy_len = FB_SIZE.min(pixels.len()).min(fb_words_available * 4);
+        let copy_len = FB_SIZE.min(pixels.len());
         let word_count = copy_len / 4;
         for i in 0..word_count {
-            let bytes = mem[FB_ADDR_WORDS + i].to_le_bytes();
+            let bytes = mem.get(FB_ADDR_WORDS + i).to_le_bytes();
             let offset = i * 4;
             pixels[offset..offset + 4].copy_from_slice(&bytes);
         }
@@ -498,7 +522,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // mem[0] and mem[1] are fixed low-memory slots that are
             // always valid given MEM_SIZE, so these two are safe to
             // index directly.
-            if vm.mem[0] != 0 {
+            if vm.mem.get(0) != 0 {
                 vm.timer += 1;
                 if vm.timer > TIMER_INTERRUPT_THRESHOLD {
                     let now = Instant::now();
@@ -513,8 +537,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                         last_render = now;
                     }
                     // Trigger interrupt
-                    vm.mem[1] = (vm.pc as i32).wrapping_mul(4);
-                    let interrupt_vector = vm.mem[0] / 4;
+                    vm.mem.set(1, (vm.pc as i32).wrapping_mul(4));
+                    let interrupt_vector = vm.mem.get(0) / 4;
                     vm.set_pc(interrupt_vector, "interrupt vector (mem[0])")?;
                     vm.timer = 0;
                 }
