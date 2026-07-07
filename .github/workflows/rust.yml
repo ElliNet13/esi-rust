@@ -251,7 +251,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete rolling --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+          # Delete existing release (ignore error if it doesn't exist)
+          gh release delete rolling --yes -R "$GITHUB_REPOSITORY" || true
+          # Delete existing tag (ignore error if it doesn't exist)
+          git push origin :refs/tags/rolling || true
+          # Create new release with the current SHA
           gh release create rolling \
             --repo "$GITHUB_REPOSITORY" \
             --title "Rolling build ($(date -u +'%Y-%m-%d %H:%M UTC'))" \
