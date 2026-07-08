@@ -56,7 +56,6 @@ jobs:
       - name: Install SDL3 build dependencies
         if: steps.cache-sdl3.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
           sudo apt-get install -y cmake ninja-build git \
             libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev \
             libxcursor-dev libxi-dev libxinerama-dev libgl1-mesa-dev \
