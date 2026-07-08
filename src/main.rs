@@ -21,8 +21,8 @@
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
-use std::fs::File;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -47,7 +47,8 @@ const EVENT_POLL_INTERVAL_INSTRUCTIONS: u32 = 0xFFF; // ~every 4096 instructions
 #[derive(Parser)]
 #[command(name = "esi_vm", version, about = "Eternal Computer Virtual Machine")]
 struct Cli {
-    /// Path to the ESI boot image to run
+    /// Path to the ESI boot image to run (.bootimage or .bootimage.xz)
+    #[arg(default_value = "")]
     binary: String,
 
     /// Run headless: no window is created, framebuffer writes become
@@ -154,15 +155,10 @@ impl Vm {
         Ok(())
     }
 
-    /// Load a binary image into memory as little-endian 32-bit words,
-    /// matching `fread(mem, 4, MEM_SIZE, f)` on a little-endian host.
-    /// Returns the number of words that didn't fit, if any, so the caller
-    /// can warn about truncation instead of silently dropping data.
-    fn load_program(&mut self, path: &str) -> io::Result<usize> {
-        let mut file = File::open(path)?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-
+    /// Load a binary image from raw bytes into memory as little-endian
+    /// 32-bit words. Used for decompressed .xz files and regular files.
+    #[allow(dead_code)]
+    fn load_program_from_bytes(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let total_words = bytes.len().div_ceil(4);
         let mut truncated = 0usize;
 
@@ -399,15 +395,56 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
+    // If no binary argument provided, show file picker
+    let binary_path = if cli.binary.is_empty() {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = rfd::FileDialog::new()
+                .add_filter("bootimage", &["bootimage", "bootimage.xz"])
+                .set_title("Select ESI boot image")
+                .pick_file();
+            match file {
+                Some(path) => path,
+                None => {
+                    eprintln!("esi_vm: no boot image selected");
+                    std::process::exit(0);
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Err("esi_vm: no boot image specified (file picker not available in WASM)".into());
+        }
+    } else {
+        Path::new(&cli.binary).to_path_buf()
+    };
+
+    let binary_path_str = binary_path.to_string_lossy().to_string();
+
+    // Check for .xz extension and decompress if needed
+    let data = if binary_path.extension().map_or(false, |ext| ext == "xz") {
+        eprintln!("esi_vm: decompressing {}...", binary_path_str);
+        let xz_data = std::fs::read(&binary_path)?;
+        let mut decompressed = Vec::new();
+        let mut reader = std::io::BufReader::new(xz_data.as_slice());
+        lzma_rs::xz_decompress(&mut reader, &mut decompressed)
+            .map_err(|e| format!("failed to decompress {}: {e}", binary_path_str))?;
+        decompressed
+    } else {
+        std::fs::read(&binary_path)?
+    };
+
     let mut vm = Vm::new();
     let truncated_words = vm
-        .load_program(&cli.binary)
-        .map_err(|e| format!("failed to load boot image '{}': {e}", cli.binary))?;
+        .load_program_from_bytes(&data)
+        .map_err(|e| format!("failed to load boot image '{}': {e}", binary_path_str))?;
     if truncated_words > 0 {
         eprintln!(
             "esi_vm: warning: boot image is larger than VM memory; {truncated_words} \
              trailing word(s) were not loaded"
         );
+    } else {
+        eprintln!("esi_vm: loaded {}", binary_path_str);
     }
 
     // Only touch SDL at all when running with a GUI. In --no-gui mode no
