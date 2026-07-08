@@ -21,6 +21,8 @@ env:
   # Defaults to 'static' on push/PR (no manual input available then).
   # Switch this default to 'dynamic' once SDL3 is packaged in Debian/Ubuntu.
   SDL3_LINK_MODE: ${{ github.event.inputs.sdl3_linking || 'static' }}
+  # Packages that are always needed, SDL3 or not
+  DEBIAN_PACKAGES: "libwayland-dev"
 
 jobs:
   test:
@@ -40,10 +42,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install  build dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev
+          sudo apt-get install -y $DEBIAN_PACKAGES
 
       # ---- SDL3: built ourselves, independent of cargo ----
       - name: Cache SDL3 install
@@ -223,6 +225,12 @@ jobs:
           key: cargo-target-${{ runner.os }}-${{ matrix.arch }}-${{ env.SDL3_LINK_MODE }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             cargo-target-${{ runner.os }}-${{ matrix.arch }}-${{ env.SDL3_LINK_MODE }}-
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $DEBIAN_PACKAGES
 
       - name: Build release
         run: cargo build --release --verbose
