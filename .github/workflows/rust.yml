@@ -86,8 +86,8 @@ jobs:
 
       - name: Export SDL3 env vars
         run: |
-          echo "PKG_CONFIG_PATH=$HOME/sdl3-install/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$HOME/sdl3-install/lib" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$HOME/sdl3-install/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/sdl3-install/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
           echo "SDL3_DIR=$HOME/sdl3-install/lib/cmake/SDL3" >> "$GITHUB_ENV"
       # ------------------------------------------------------
 
